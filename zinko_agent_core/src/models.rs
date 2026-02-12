@@ -1,31 +1,47 @@
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 
+/// Represents the full telemetry packet sent by the agent.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TelemetryData {
+    /// Timestamp of the telemetry collection.
     pub timestamp: DateTime<Utc>,
+    /// Unique identifier for the device.
     pub device_id: String,
+    /// CPU related metrics.
     pub cpu: CpuMetrics,
+    /// Storage related metrics.
     pub storage: StorageMetrics,
+    /// Battery related metrics.
     pub battery: BatteryMetrics,
 }
 
+/// Metrics representing CPU state.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CpuMetrics {
+    /// Current CPU usage percentage (0.0 - 100.0).
     pub usage_pct: f32,
+    /// Current CPU temperature in Celsius.
     pub temp_c: f32,
 }
 
+/// Metrics representing storage device health and state.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StorageMetrics {
+    /// Storage device health percentage (0.0 - 100.0).
     pub health_pct: f32,
+    /// Current storage device temperature in Celsius.
     pub temp_c: f32,
 }
 
+/// Metrics representing battery health and capacity.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BatteryMetrics {
+    /// Total charge cycles the battery has completed.
     pub cycles: u32,
+    /// Battery health percentage based on original capacity.
     pub health_pct: f32,
+    /// Current estimated battery capacity in mAh.
     pub capacity_mah: u32,
 }
 

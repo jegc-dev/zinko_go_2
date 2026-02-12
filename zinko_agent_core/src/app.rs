@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use crate::models::TelemetryData;
 use std::sync::mpsc::Receiver;
 
+/// Represents the different views (tabs) within the application.
 #[derive(PartialEq)]
 pub enum Tab {
     Dashboard,
@@ -11,11 +12,17 @@ pub enum Tab {
     SystemInfo,
 }
 
+/// The main Zinko Application state and UI logic.
 pub struct ZinkoApp {
+    /// Circular buffer of recent telemetry data for plotting.
     pub telemetry_history: VecDeque<TelemetryData>,
+    /// The most recent telemetry packet received from the agent.
     pub last_received: Option<TelemetryData>,
+    /// Maximum number of data points to keep in history.
     pub max_history: usize,
+    /// Channel receiver hooked into the background agent thread.
     pub receiver: Receiver<TelemetryData>,
+    /// Currently active navigation tab.
     pub current_tab: Tab,
 }
 
@@ -110,7 +117,10 @@ impl ZinkoApp {
             // Temperature Graph
             ui.vertical(|ui| {
                 ui.group(|ui| {
-                    ui.strong("Real-time CPU Temperature (°C)");
+                    ui.horizontal(|ui| {
+                        ui.strong("Real-time CPU Temperature:");
+                        ui.heading(format!("{:.1}°C", data.cpu.temp_c));
+                    });
                     let points: PlotPoints = self.telemetry_history
                         .iter()
                         .enumerate()

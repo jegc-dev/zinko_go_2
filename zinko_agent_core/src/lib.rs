@@ -1,3 +1,9 @@
+//! Zinko Agent Core Library
+//!
+//! This library provides the core functionality for the Zinko Transparency Agent,
+//! including telemetry models, hardware metrics collection, simulation logic,
+//! heuristic alerts, and the user interface application logic.
+
 pub mod models;
 pub mod telemetry;
 pub mod simulator;

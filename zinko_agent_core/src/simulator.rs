@@ -1,9 +1,13 @@
 use std::path::Path;
 use crate::models::TelemetryData;
 
+/// The Simulator component allows for manual triggering of hardware failure states.
+/// This is used during demonstrations to verify the agent's response to critical data.
 pub struct Simulator;
 
 impl Simulator {
+    /// Checks for the existence of specific "trigger files" in the execution directory
+    /// and overrides telemetry data if they are found.
     pub fn apply_overrides(data: &mut TelemetryData) {
         // CPU Temperature Override
         if Path::new("fail_temp.trigger").exists() {

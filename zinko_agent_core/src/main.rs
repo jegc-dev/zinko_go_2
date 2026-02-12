@@ -7,21 +7,29 @@ use zinko_agent_core::models::TelemetryData;
 use zinko_agent_core::simulator::Simulator;
 use zinko_agent_core::app::ZinkoApp;
 use zinko_agent_core::telemetry;
+use zinko_agent_core::AlertSystem;
 
+/// The entry point for the Zinko Agent application.
+/// It initializes the background telemetry agent and the graphical UI.
 fn main() -> anyhow::Result<()> {
-    // 1. Setup communication channel (Agent -> UI)
+    // 1. Check for CLI fallback flag to support headless environments or debug rendering issues.
+    let args: Vec<String> = std::env::args().collect();
+    let cli_mode = args.contains(&"--cli".to_string());
+
+    // 2. Setup communication channel (Agent -> UI) for cross-thread telemetry delivery.
     let (tx, rx) = mpsc::channel();
 
-    // 2. Spawn Agent Thread (Telemetría de bajo nivel)
+    // 3. Spawn Agent Thread (Low-level hardware telemetry collection)
     thread::spawn(move || {
         let mut sys = System::new_all();
         let device_id = "ZINKO-DEMO-001".to_string();
-        let mut alert_system = zinko_agent_core::AlertSystem::new();
+        let mut alert_system = AlertSystem::new();
         
-        // Runtime para llamadas async (webhooks) desde el thread síncrono
+        // Runtime for async calls (webhooks) from the synchronous agent thread.
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         loop {
+            // Collect metrics from different hardware components.
             let cpu = telemetry::get_cpu_metrics(&mut sys);
             let storage = telemetry::get_storage_metrics();
             let battery = telemetry::get_battery_metrics();
@@ -34,13 +42,14 @@ fn main() -> anyhow::Result<()> {
                 battery,
             };
 
+            // Apply simulation triggers if specific files are present in the filesystem.
             Simulator::apply_overrides(&mut data);
 
-            // Check for Alerts
+            // Evaluate heuristic alert rules against the collected telemetry.
             let alerts = alert_system.check_rules(&data);
             for alert in alerts {
-                // En un entorno real, la URL vendría de una config. 
-                // Usamos un placeholder o una variable de entorno.
+                // In a production environment, the webhook URL would be fetched from a secure configuration.
+                // Here we use an environment variable for demonstration purposes.
                 if let Ok(webhook_url) = std::env::var("ZINKO_WEBHOOK") {
                     let alert_clone = alert.clone();
                     rt.block_on(async {
@@ -50,16 +59,33 @@ fn main() -> anyhow::Result<()> {
                 println!("🚨 ALERT [{}]: {}", alert.level, alert.message);
             }
 
-            // Send to UI
+            // Send processed telemetry data to the UI thread.
             if tx.send(data).is_err() {
-                break; // UI closed
+                break; // Exit loop if the UI has been closed.
             }
 
+            // Wait for 2 seconds before the next telemetry cycle.
             thread::sleep(Duration::from_secs(2));
         }
     });
 
-    // 3. Launch UI (Main Thread)
+    // Handle CLI mode if requested, providing an interactive heartbeat in the terminal.
+    if cli_mode {
+        println!("🚀 Zinko Agent running in CLI mode (Headless)");
+        println!("Press Ctrl+C to stop.");
+        let mut count = 0;
+        loop {
+            if let Ok(data) = rx.recv() {
+                count += 1;
+                print!("\r[Pulse #{} | Temp: {:.1}°C | SSD Health: {:.1}%] Heartbeat OK", 
+                    count, data.cpu.temp_c, data.storage.health_pct);
+                use std::io::{Write, stdout};
+                let _ = stdout().flush();
+            }
+        }
+    }
+
+    // 4. Launch UI (Graphical User Interface using egui and eframe)
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([800.0, 600.0])
