@@ -50,4 +50,27 @@ mod tests {
         // Cleanup
         fs::remove_file("fail_temp.trigger").unwrap();
     }
+
+    #[test]
+    fn test_no_overrides_when_files_missing() {
+        let mut data = TelemetryData {
+            timestamp: Utc::now(),
+            device_id: "test".to_string(),
+            cpu: CpuMetrics { usage_pct: 0.0, temp_c: 40.0 },
+            storage: StorageMetrics { health_pct: 100.0, temp_c: 30.0 },
+            battery: BatteryMetrics { cycles: 0, health_pct: 100.0, capacity_mah: 5000 },
+        };
+
+        // Ensure no trigger files exist (they shouldn't in a clean test environment, but just in case)
+        let _ = fs::remove_file("fail_temp.trigger");
+        let _ = fs::remove_file("fail_battery.trigger");
+        let _ = fs::remove_file("fail_disk.trigger");
+
+        Simulator::apply_overrides(&mut data);
+
+        // Values should remain unchanged
+        assert_eq!(data.cpu.temp_c, 40.0);
+        assert_eq!(data.storage.health_pct, 100.0);
+        assert_eq!(data.battery.cycles, 0);
+    }
 }
