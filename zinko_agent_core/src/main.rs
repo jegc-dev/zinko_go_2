@@ -1,16 +1,12 @@
-mod models;
-mod telemetry;
-mod simulator;
-mod app;
-
 use std::time::Duration;
 use std::sync::mpsc;
 use std::thread;
 use sysinfo::System;
 use chrono::Utc;
-use crate::models::TelemetryData;
-use crate::simulator::Simulator;
-use crate::app::ZinkoApp;
+use zinko_agent_core::models::TelemetryData;
+use zinko_agent_core::simulator::Simulator;
+use zinko_agent_core::app::ZinkoApp;
+use zinko_agent_core::telemetry;
 
 fn main() -> anyhow::Result<()> {
     // 1. Setup communication channel (Agent -> UI)
@@ -20,6 +16,10 @@ fn main() -> anyhow::Result<()> {
     thread::spawn(move || {
         let mut sys = System::new_all();
         let device_id = "ZINKO-DEMO-001".to_string();
+        let mut alert_system = zinko_agent_core::AlertSystem::new();
+        
+        // Runtime para llamadas async (webhooks) desde el thread síncrono
+        let rt = tokio::runtime::Runtime::new().unwrap();
 
         loop {
             let cpu = telemetry::get_cpu_metrics(&mut sys);
@@ -35,6 +35,20 @@ fn main() -> anyhow::Result<()> {
             };
 
             Simulator::apply_overrides(&mut data);
+
+            // Check for Alerts
+            let alerts = alert_system.check_rules(&data);
+            for alert in alerts {
+                // En un entorno real, la URL vendría de una config. 
+                // Usamos un placeholder o una variable de entorno.
+                if let Ok(webhook_url) = std::env::var("ZINKO_WEBHOOK") {
+                    let alert_clone = alert.clone();
+                    rt.block_on(async {
+                        let _ = alert_system.send_to_webhook(&webhook_url, &alert_clone).await;
+                    });
+                }
+                println!("🚨 ALERT [{}]: {}", alert.level, alert.message);
+            }
 
             // Send to UI
             if tx.send(data).is_err() {
@@ -66,7 +80,7 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::sync::mpsc;
-    use crate::models::{CpuMetrics, StorageMetrics, BatteryMetrics};
+    use zinko_agent_core::models::{CpuMetrics, StorageMetrics, BatteryMetrics};
 
     #[test]
     fn test_channel_communication() {

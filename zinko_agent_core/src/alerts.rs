@@ -1,0 +1,127 @@
+use serde::Serialize;
+use crate::models::TelemetryData;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+#[derive(Debug, Serialize, Clone)]
+pub struct Alert {
+    pub level: String,
+    pub message: String,
+}
+
+pub struct AlertSystem {
+    threshold_temp: f32,
+    threshold_ssd: f32,
+    threshold_battery: f32,
+    last_alerts: HashMap<String, Instant>,
+    debounce_duration: Duration,
+}
+
+impl AlertSystem {
+    pub fn new() -> Self {
+        Self {
+            threshold_temp: 90.0,
+            threshold_ssd: 10.0,
+            threshold_battery: 70.0,
+            last_alerts: HashMap::new(),
+            debounce_duration: Duration::from_secs(300), // 5 minutes anti-spam
+        }
+    }
+
+    pub fn check_rules(&mut self, data: &TelemetryData) -> Vec<Alert> {
+        let mut alerts = Vec::new();
+        let now = Instant::now();
+
+        // Rule 1: CPU Temperature
+        if data.cpu.temp_c > self.threshold_temp {
+            if self.should_alert("cpu_temp", now) {
+                alerts.push(Alert {
+                    level: "CRITICAL".to_string(),
+                    message: format!("High CPU Temperature detected: {:.1}°C", data.cpu.temp_c),
+                });
+            }
+        }
+
+        // Rule 2: SSD Health
+        if data.storage.health_pct < self.threshold_ssd {
+            if self.should_alert("ssd_health", now) {
+                alerts.push(Alert {
+                    level: "CRITICAL".to_string(),
+                    message: format!("Critical SSD Health: {:.1}% - Backup now!", data.storage.health_pct),
+                });
+            }
+        }
+
+        // Rule 3: Battery Health
+        if data.battery.health_pct < self.threshold_battery {
+            if self.should_alert("battery_health", now) {
+                alerts.push(Alert {
+                    level: "WARNING".to_string(),
+                    message: format!("Battery Degradation: {:.1}% health remaining.", data.battery.health_pct),
+                });
+            }
+        }
+
+        alerts
+    }
+
+    fn should_alert(&mut self, alert_type: &str, now: Instant) -> bool {
+        if let Some(last_time) = self.last_alerts.get(alert_type) {
+            if now.duration_since(*last_time) < self.debounce_duration {
+                return false;
+            }
+        }
+        self.last_alerts.insert(alert_type.to_string(), now);
+        true
+    }
+
+    pub async fn send_to_webhook(&self, webhook_url: &str, alert: &Alert) -> anyhow::Result<()> {
+        let client = reqwest::Client::new();
+        
+        let payload = serde_json::json!({
+            "content": format!("🚨 **Zinko Alert [{}]:** {}", alert.level, alert.message),
+            "username": "Zinko Transparency Agent"
+        });
+
+        client.post(webhook_url)
+            .json(&payload)
+            .send()
+            .await?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{CpuMetrics, StorageMetrics, BatteryMetrics};
+    use chrono::Utc;
+
+    #[test]
+    fn test_alert_thresholds() {
+        let mut alert_system = AlertSystem::new();
+        let mut data = TelemetryData {
+            timestamp: Utc::now(),
+            device_id: "test".to_string(),
+            cpu: CpuMetrics { usage_pct: 0.0, temp_c: 95.0 }, // Over threshold
+            storage: StorageMetrics { health_pct: 100.0, temp_c: 30.0 },
+            battery: BatteryMetrics { cycles: 0, health_pct: 100.0, capacity_mah: 5000 },
+        };
+
+        let alerts = alert_system.check_rules(&data);
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].message.contains("High CPU Temperature"));
+
+        // Test debounce
+        let alerts_second = alert_system.check_rules(&data);
+        assert_eq!(alerts_second.len(), 0); // Should be debounced
+
+        // Test SSD rule
+        data.cpu.temp_c = 40.0;
+        data.storage.health_pct = 5.0; // Over threshold
+        let alerts_ssd = alert_system.check_rules(&data);
+        assert_eq!(alerts_ssd.len(), 1);
+        assert!(alerts_ssd[0].message.contains("SSD Health"));
+    }
+}
