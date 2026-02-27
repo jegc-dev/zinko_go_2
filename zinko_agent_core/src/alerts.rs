@@ -1,5 +1,5 @@
-use serde::Serialize;
 use crate::models::TelemetryData;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -24,16 +24,20 @@ pub struct AlertSystem {
 }
 
 impl AlertSystem {
+    /// Creates a new AlertSystem with default thresholds.
+    /// Debounce is set to 0 seconds for demo purposes.
     pub fn new() -> Self {
         Self {
             threshold_temp: 90.0,
             threshold_ssd: 10.0,
             threshold_battery: 70.0,
             last_alerts: HashMap::new(),
-            debounce_duration: Duration::from_secs(300), // 5 minutes anti-spam
+            debounce_duration: Duration::from_secs(0), // Removed for demo purposes: 0 seconds anti-spam
         }
     }
 
+    /// Evaluates all heuristic rules against the given telemetry data.
+    /// Returns a list of alerts that have been triggered.
     pub fn check_rules(&mut self, data: &TelemetryData) -> Vec<Alert> {
         let mut alerts = Vec::new();
         let now = Instant::now();
@@ -53,7 +57,10 @@ impl AlertSystem {
             if self.should_alert("ssd_health", now) {
                 alerts.push(Alert {
                     level: "CRITICAL".to_string(),
-                    message: format!("Critical SSD Health: {:.1}% - Backup now!", data.storage.health_pct),
+                    message: format!(
+                        "Critical SSD Health: {:.1}% - Backup now!",
+                        data.storage.health_pct
+                    ),
                 });
             }
         }
@@ -63,7 +70,10 @@ impl AlertSystem {
             if self.should_alert("battery_health", now) {
                 alerts.push(Alert {
                     level: "WARNING".to_string(),
-                    message: format!("Battery Degradation: {:.1}% health remaining.", data.battery.health_pct),
+                    message: format!(
+                        "Battery Degradation: {:.1}% health remaining.",
+                        data.battery.health_pct
+                    ),
                 });
             }
         }
@@ -71,6 +81,7 @@ impl AlertSystem {
         alerts
     }
 
+    /// Checks if an alert of the given type should be fired based on the debounce duration.
     fn should_alert(&mut self, alert_type: &str, now: Instant) -> bool {
         if let Some(last_time) = self.last_alerts.get(alert_type) {
             if now.duration_since(*last_time) < self.debounce_duration {
@@ -81,18 +92,23 @@ impl AlertSystem {
         true
     }
 
+    /// Sends an alert payload to the configured webhook URL via HTTP POST.
+    /// Appends the alert level as a query parameter for GCP log visibility.
     pub async fn send_to_webhook(&self, webhook_url: &str, alert: &Alert) -> anyhow::Result<()> {
         let client = reqwest::Client::new();
-        
+
         let payload = serde_json::json!({
             "content": format!("🚨 **Zinko Alert [{}]:** {}", alert.level, alert.message),
             "username": "Zinko Transparency Agent"
         });
 
-        client.post(webhook_url)
-            .json(&payload)
-            .send()
-            .await?;
+        let url_with_level = if webhook_url.contains('?') {
+            format!("{}&level={}", webhook_url, alert.level)
+        } else {
+            format!("{}?level={}", webhook_url, alert.level)
+        };
+
+        client.post(url_with_level).json(&payload).send().await?;
 
         Ok(())
     }
@@ -101,7 +117,7 @@ impl AlertSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{CpuMetrics, StorageMetrics, BatteryMetrics};
+    use crate::models::{BatteryMetrics, CpuMetrics, StorageMetrics};
     use chrono::Utc;
 
     #[test]
@@ -110,18 +126,42 @@ mod tests {
         let mut data = TelemetryData {
             timestamp: Utc::now(),
             device_id: "test".to_string(),
-            cpu: CpuMetrics { usage_pct: 0.0, temp_c: 95.0 }, // Over threshold
-            storage: StorageMetrics { health_pct: 100.0, temp_c: 30.0 },
-            battery: BatteryMetrics { cycles: 0, health_pct: 100.0, capacity_mah: 5000 },
+            cpu: CpuMetrics {
+                usage_pct: 0.0,
+                temp_c: 95.0,
+            }, // Over threshold
+            storage: StorageMetrics {
+                health_pct: 100.0,
+                temp_c: 30.0,
+            },
+            battery: BatteryMetrics {
+                cycles: 0,
+                health_pct: 100.0,
+                capacity_mah: 5000,
+            },
+            memory: crate::models::MemoryMetrics {
+                total_kb: 16000000,
+                used_kb: 8000000,
+                usage_pct: 50.0,
+            },
+            os_name: "Test".to_string(),
+            os_version: "1.0".to_string(),
+            kernel_version: "5.0".to_string(),
+            hostname: "test".to_string(),
+            agent: crate::models::AgentMetrics {
+                cpu_pct: 0.0,
+                mem_kb: 0,
+                mem_pct: 0.0,
+            },
         };
 
         let alerts = alert_system.check_rules(&data);
         assert_eq!(alerts.len(), 1);
         assert!(alerts[0].message.contains("High CPU Temperature"));
 
-        // Test debounce
+        // With debounce set to 0 for demo, the same alert should fire again
         let alerts_second = alert_system.check_rules(&data);
-        assert_eq!(alerts_second.len(), 0); // Should be debounced
+        assert_eq!(alerts_second.len(), 1); // Fires again since debounce is 0s
 
         // Test SSD rule
         data.cpu.temp_c = 40.0;
@@ -129,5 +169,89 @@ mod tests {
         let alerts_ssd = alert_system.check_rules(&data);
         assert_eq!(alerts_ssd.len(), 1);
         assert!(alerts_ssd[0].message.contains("SSD Health"));
+    }
+
+    #[test]
+    fn test_battery_alert() {
+        let mut alert_system = AlertSystem::new();
+        let data = TelemetryData {
+            timestamp: Utc::now(),
+            device_id: "test".to_string(),
+            cpu: CpuMetrics {
+                usage_pct: 0.0,
+                temp_c: 40.0,
+            },
+            storage: StorageMetrics {
+                health_pct: 100.0,
+                temp_c: 30.0,
+            },
+            battery: BatteryMetrics {
+                cycles: 500,
+                health_pct: 60.0,
+                capacity_mah: 3000,
+            },
+            memory: crate::models::MemoryMetrics {
+                total_kb: 16000000,
+                used_kb: 8000000,
+                usage_pct: 50.0,
+            },
+            os_name: "Test".to_string(),
+            os_version: "1.0".to_string(),
+            kernel_version: "5.0".to_string(),
+            hostname: "test".to_string(),
+            agent: crate::models::AgentMetrics {
+                cpu_pct: 0.0,
+                mem_kb: 0,
+                mem_pct: 0.0,
+            },
+        };
+
+        let alerts = alert_system.check_rules(&data);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].level, "WARNING");
+        assert!(alerts[0].message.contains("Battery Degradation"));
+    }
+
+    #[test]
+    fn test_no_alerts_when_healthy() {
+        let mut alert_system = AlertSystem::new();
+        let data = TelemetryData {
+            timestamp: Utc::now(),
+            device_id: "test".to_string(),
+            cpu: CpuMetrics {
+                usage_pct: 10.0,
+                temp_c: 45.0,
+            },
+            storage: StorageMetrics {
+                health_pct: 95.0,
+                temp_c: 30.0,
+            },
+            battery: BatteryMetrics {
+                cycles: 100,
+                health_pct: 95.0,
+                capacity_mah: 4500,
+            },
+            memory: crate::models::MemoryMetrics {
+                total_kb: 16000000,
+                used_kb: 8000000,
+                usage_pct: 50.0,
+            },
+            os_name: "Test".to_string(),
+            os_version: "1.0".to_string(),
+            kernel_version: "5.0".to_string(),
+            hostname: "test".to_string(),
+            agent: crate::models::AgentMetrics {
+                cpu_pct: 0.1,
+                mem_kb: 5000,
+                mem_pct: 0.03,
+            },
+        };
+
+        let alerts = alert_system.check_rules(&data);
+        assert_eq!(
+            alerts.len(),
+            0,
+            "No alerts should fire for healthy telemetry"
+        );
     }
 }
