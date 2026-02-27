@@ -103,6 +103,75 @@ zinko_go/
 
 ---
 
+## 🧩 Software Architecture
+
+### Design Patterns
+
+The project follows established software architecture patterns to ensure maintainability, testability, and separation of concerns:
+
+#### 1. Modular Architecture (Separation of Concerns)
+Each module has a single, well-defined responsibility:
+
+```
+┌─────────────┐   ┌──────────────┐   ┌──────────────┐   ┌────────────┐
+│  telemetry  │   │    models    │   │    alerts    │   │ simulator  │
+│  (collect)  │──►│   (data)     │──►│  (evaluate)  │   │  (testing) │
+└─────────────┘   └──────┬───────┘   └──────┬───────┘   └────────────┘
+                         │                  │
+                         ▼                  ▼
+                  ┌──────────────┐   ┌──────────────┐
+                  │     app      │   │   webhook    │
+                  │    (GUI)     │   │   (cloud)    │
+                  └──────────────┘   └──────────────┘
+```
+
+| Module | Responsibility | Pattern |
+|:---|:---|:---|
+| `models.rs` | Data structures and serialization contracts | **Data Transfer Object (DTO)** |
+| `telemetry/mod.rs` | Hardware metrics collection and WMI queries | **Service / Adapter** |
+| `alerts.rs` | Rule evaluation, debounce, and webhook delivery | **Strategy + Observer** |
+| `simulator.rs` | File-based telemetry override for testing | **Decorator** |
+| `app.rs` | Desktop UI rendering and state management | **Immediate Mode GUI (IMGUI)** |
+| `main.rs` | Orchestration of threads, channels, and lifecycle | **Mediator** |
+
+#### 2. Producer-Consumer (Channel-Based Concurrency)
+The agent uses Rust's `mpsc` (Multi-Producer, Single-Consumer) channels to decouple the telemetry collection thread from the UI thread:
+
+```
+┌──────────────────┐     mpsc::channel     ┌──────────────────┐
+│  Agent Thread    │ ────────────────────► │  UI Thread       │
+│  (producer)      │    TelemetryData      │  (consumer)      │
+│  - collect()     │                       │  - render()      │
+│  - evaluate()    │                       │  - update_data() │
+│  - send_alert()  │                       │                  │
+└──────────────────┘                       └──────────────────┘
+```
+
+This pattern ensures:
+- **Non-blocking UI** — The GUI never waits for hardware queries
+- **Thread safety** — Data crosses thread boundaries via owned values (no shared state)
+- **Graceful shutdown** — If the UI closes, `tx.send()` returns `Err` and the agent thread exits
+
+#### 3. Pipeline Architecture (Cloud Alert Flow)
+Alerts follow a linear pipeline with clear transformation stages:
+
+```
+Telemetry → Rules Engine → Alert → Enrichment (ITAM) → HTTP POST → GCP → Slack
+```
+
+Each stage is independently testable and replaceable.
+
+#### 4. Strategy Pattern (Alert Rules)
+The `AlertSystem` evaluates multiple independent rules against the same telemetry data. Each rule is a self-contained strategy with its own threshold, severity level, and debounce tracking. New rules can be added without modifying existing ones.
+
+#### 5. Fallback Chain (Device Identification)
+The WMI serial number extraction follows the **Chain of Responsibility** pattern, trying multiple sources in priority order (`csproduct → baseboard → bios → diskdrive → hostname`) until a valid identifier is found.
+
+#### 6. Decorator Pattern (Simulation)
+The `Simulator::apply_overrides()` function acts as a decorator that can modify telemetry data before it reaches the alert engine and UI, without changing the collection logic. This enables testing and demonstration of failure scenarios without actual hardware faults.
+
+---
+
 ## 🚀 Getting Started
 
 ### Prerequisites
@@ -147,6 +216,48 @@ cargo test
 | `simulator` | Override application, no-override baseline |
 | `main` | Cross-thread channel communication |
 | `integration` | End-to-end telemetry flow, history window bounds |
+
+### Unit Tests
+
+Unit tests validate individual module behavior in isolation. All tests use mock `TelemetryData` instances with controlled values.
+
+#### `models` — Data Integrity (3 tests)
+
+| Test | What It Validates |
+|:---|:---|
+| `test_telemetry_serialization` | Verifies that a `TelemetryData` struct serializes to JSON correctly, including the `device_id` field. Ensures the serde configuration works for all fields. |
+| `test_telemetry_deserialization` | Performs a full **JSON round-trip** (serialize → deserialize) and validates that all field values survive the transformation intact, including nested structs like `AgentMetrics`. |
+| `test_memory_metrics_percentage` | Validates that `MemoryMetrics` field values satisfy logical constraints: `usage_pct` is between 0-100% and `used_kb` does not exceed `total_kb`. |
+
+#### `alerts` — Heuristic Alert Engine (3 tests)
+
+| Test | What It Validates |
+|:---|:---|
+| `test_alert_thresholds` | Injects telemetry with CPU temp at 95°C (above 90°C threshold). Asserts exactly one `CRITICAL` alert fires with the correct message. Then modifies SSD health to 5% (below 10% threshold) and verifies the SSD alert fires independently. |
+| `test_battery_alert` | Injects telemetry with battery health at 60% (below 70% threshold). Asserts a `WARNING`-level alert fires with the "Battery Degradation" message. Validates that battery rules use `WARNING` severity, not `CRITICAL`. |
+| `test_no_alerts_when_healthy` | Injects perfectly healthy telemetry (temp 45°C, SSD 95%, battery 95%). Asserts that **zero alerts** fire, verifying there are no false positives under normal operating conditions. |
+
+#### `simulator` — Failure Simulation (2 tests)
+
+| Test | What It Validates |
+|:---|:---|
+| `test_simulator_overrides` | Creates a `fail_temp.trigger` file in an isolated temp directory, runs `apply_overrides()`, and asserts that `cpu.temp_c` is overridden to `92.5°C`. Cleans up the temp directory after execution to prevent race conditions with parallel tests. |
+| `test_no_overrides_when_files_missing` | Ensures that no trigger files exist, runs `apply_overrides()`, and asserts that all telemetry values remain **unchanged** (temp stays at 40°C, SSD at 100%, battery at 0 cycles). |
+
+#### `main` — Thread Communication (1 test)
+
+| Test | What It Validates |
+|:---|:---|
+| `test_channel_communication` | Creates an `mpsc` channel, sends a `TelemetryData` packet through it, and verifies the receiver gets the same `device_id`. Validates the Producer-Consumer pattern that connects the agent thread to the UI. |
+
+### Integration Tests
+
+Integration tests (`tests/integration_tests.rs`) validate the interaction between multiple modules working together.
+
+| Test | Modules Tested | What It Validates |
+|:---|:---|:---|
+| `test_end_to_end_telemetry_flow` | `models` + `simulator` + `serde` | Creates a telemetry packet, passes it through `Simulator::apply_overrides()`, serializes to JSON, deserializes back, and verifies the `device_id` survives the full pipeline. Tests the complete data flow from creation → transformation → serialization → deserialization. |
+| `test_telemetry_history_window` | `models` + `app` | Creates a `ZinkoApp`, pushes 110 data packets into it (exceeding the `max_history` of 100), and asserts the circular buffer never exceeds 100 entries. Validates the sliding window mechanism that prevents unbounded memory growth. |
 
 ---
 
