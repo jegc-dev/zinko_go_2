@@ -93,13 +93,30 @@ impl AlertSystem {
     }
 
     /// Sends an alert payload to the configured webhook URL via HTTP POST.
-    /// Appends the alert level as a query parameter for GCP log visibility.
-    pub async fn send_to_webhook(&self, webhook_url: &str, alert: &Alert) -> anyhow::Result<()> {
+    /// Includes device identification and telemetry context for GCP processing.
+    pub async fn send_to_webhook(
+        &self,
+        webhook_url: &str,
+        alert: &Alert,
+        data: &TelemetryData,
+    ) -> anyhow::Result<()> {
         let client = reqwest::Client::new();
 
         let payload = serde_json::json!({
             "content": format!("🚨 **Zinko Alert [{}]:** {}", alert.level, alert.message),
-            "username": "Zinko Transparency Agent"
+            "username": "Zinko Transparency Agent",
+            "device_id": data.device_id,
+            "hostname": data.hostname,
+            "os_name": data.os_name,
+            "os_version": data.os_version,
+            "cpu_usage_pct": data.cpu.usage_pct,
+            "cpu_temp_c": data.cpu.temp_c,
+            "ram_usage_pct": data.memory.usage_pct,
+            "ssd_health_pct": data.storage.health_pct,
+            "battery_health_pct": data.battery.health_pct,
+            "battery_cycles": data.battery.cycles,
+            "alert_level": alert.level,
+            "alert_message": alert.message,
         });
 
         let url_with_level = if webhook_url.contains('?') {

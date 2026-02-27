@@ -58,9 +58,10 @@ fn main() -> anyhow::Result<()> {
             for alert in alerts {
                 if let Ok(webhook_url) = std::env::var("ZINKO_WEBHOOK") {
                     let alert_clone = alert.clone();
+                    let data_clone = data.clone();
                     rt.block_on(async {
                         match alert_system
-                            .send_to_webhook(&webhook_url, &alert_clone)
+                            .send_to_webhook(&webhook_url, &alert_clone, &data_clone)
                             .await
                         {
                             Ok(_) => println!("✅ Cloud Sync: Alert sent successfully."),
